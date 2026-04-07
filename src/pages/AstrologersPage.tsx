@@ -5,6 +5,7 @@ import { Modal } from '../components/Modal';
 import { PageHeader } from '../components/PageHeader';
 import { PaginationBar } from '../components/PaginationBar';
 import { UploadField } from '../components/UploadField';
+import { DeleteIcon, EditIcon, PlusIcon } from '../components/AdminIcons';
 import { useAdminQuery } from '../hooks/useAdminQuery';
 import { api } from '../lib/api';
 import type { Astrologer, PaginatedResponse } from '../lib/types';
@@ -150,6 +151,7 @@ export function AstrologersPage() {
             setOpen(true);
           }}
         >
+          <PlusIcon width={16} height={16} />
           Add astrologer
         </button>
       </div>
@@ -195,14 +197,16 @@ export function AstrologersPage() {
                     setSelected(row);
                     setOpen(true);
                   }}
+                  aria-label="Edit astrologer"
                 >
-                  Edit
+                  <EditIcon width={16} height={16} />
                 </button>
                 <button
                   className="danger-icon-button"
                   onClick={() => remove(row.id)}
+                  aria-label="Delete astrologer"
                 >
-                  Delete
+                  <DeleteIcon width={16} height={16} />
                 </button>
               </div>
             )}

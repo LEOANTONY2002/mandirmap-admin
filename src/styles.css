@@ -331,6 +331,10 @@ button {
   border-radius: 16px;
   padding: 14px 18px;
   font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 .primary-button {
@@ -428,6 +432,60 @@ button {
   gap: 8px;
 }
 
+.inline-action-row,
+.section-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.section-header-row h3,
+.section-header-row h4,
+.dynamic-card-header strong {
+  margin: 0;
+}
+
+.dynamic-list {
+  display: grid;
+  gap: 14px;
+}
+
+.dynamic-row,
+.dynamic-card {
+  border: 1px solid #ece2d2;
+  border-radius: 20px;
+  background: #fffefb;
+}
+
+.dynamic-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 0.8fr) auto;
+  gap: 12px;
+  align-items: end;
+  padding: 14px;
+}
+
+.dynamic-card {
+  padding: 14px;
+  display: grid;
+  gap: 14px;
+}
+
+.dynamic-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.empty-inline-state {
+  border-radius: 16px;
+  padding: 14px 16px;
+  background: #fff8eb;
+  color: #8a6118;
+}
+
 .danger-icon-button {
   border: 1px solid #fecaca;
   background: #fff5f5;
@@ -439,6 +497,10 @@ button {
 .upload-field {
   display: grid;
   gap: 10px;
+}
+
+.upload-button {
+  width: fit-content;
 }
 
 .modal-backdrop {
@@ -493,7 +555,8 @@ button {
 
   .workspace-grid,
   .workspace-grid-wide,
-  .form-grid {
+  .form-grid,
+  .dynamic-row {
     grid-template-columns: 1fr;
   }
 }

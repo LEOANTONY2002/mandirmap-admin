@@ -5,6 +5,7 @@ import { Modal } from '../components/Modal';
 import { PageHeader } from '../components/PageHeader';
 import { PaginationBar } from '../components/PaginationBar';
 import { UploadField } from '../components/UploadField';
+import { DeleteIcon, EditIcon, PlusIcon } from '../components/AdminIcons';
 import { useAdminQuery } from '../hooks/useAdminQuery';
 import { api } from '../lib/api';
 import type { Festival, OptionBundle, PaginatedResponse } from '../lib/types';
@@ -140,6 +141,7 @@ export function FestivalsPage() {
             setOpen(true);
           }}
         >
+          <PlusIcon width={16} height={16} />
           Add festival
         </button>
       </div>
@@ -190,14 +192,16 @@ export function FestivalsPage() {
                     });
                     setOpen(true);
                   }}
+                  aria-label="Edit festival"
                 >
-                  Edit
+                  <EditIcon width={16} height={16} />
                 </button>
                 <button
                   className="danger-icon-button"
                   onClick={() => remove(row.id)}
+                  aria-label="Delete festival"
                 >
-                  Delete
+                  <DeleteIcon width={16} height={16} />
                 </button>
               </div>
             )}

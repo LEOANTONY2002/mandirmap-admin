@@ -4,6 +4,7 @@ import { Modal } from '../components/Modal';
 import { PageHeader } from '../components/PageHeader';
 import { PaginationBar } from '../components/PaginationBar';
 import { UploadField } from '../components/UploadField';
+import { DeleteIcon, EditIcon, PlusIcon } from '../components/AdminIcons';
 import { useAdminQuery } from '../hooks/useAdminQuery';
 import { api } from '../lib/api';
 import type {
@@ -106,6 +107,7 @@ function TaxonomyPage<T extends { id: number }>({
             setOpen(true);
           }}
         >
+          <PlusIcon width={16} height={16} />
           Add new
         </button>
       </div>
@@ -140,14 +142,16 @@ function TaxonomyPage<T extends { id: number }>({
                     setSelected(row);
                     setOpen(true);
                   }}
+                  aria-label="Edit item"
                 >
-                  Edit
+                  <EditIcon width={16} height={16} />
                 </button>
                 <button
                   className="danger-icon-button"
                   onClick={() => remove(row.id)}
+                  aria-label="Delete item"
                 >
-                  Delete
+                  <DeleteIcon width={16} height={16} />
                 </button>
               </div>
             )}

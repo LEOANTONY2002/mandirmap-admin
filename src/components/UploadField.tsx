@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api } from '../lib/api';
 import { useAuth } from '../state/auth';
+import { UploadIcon } from './AdminIcons';
 
 export function UploadField({
   label,
@@ -44,7 +45,8 @@ export function UploadField({
           hidden
           onChange={(e) => handleFileChange(e.target.files?.[0] ?? null)}
         />
-        {uploading ? 'Uploading...' : 'Upload image'}
+        <UploadIcon width={16} height={16} />
+        <span>{uploading ? 'Uploading...' : 'Upload image'}</span>
       </label>
       {value ? <img className="thumb-preview" src={value} alt={label} /> : null}
       {error ? <div className="error-banner">{error}</div> : null}
