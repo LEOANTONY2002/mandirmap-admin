@@ -1,4 +1,7 @@
-const API_BASE = import.meta.env.SERVER_BASE_URL ?? "http://localhost:5000";
+const API_BASE =
+  import.meta.env.SERVER_BASE_URL ||
+  "https://mandirmap-backend-production-7d71.up.railway.app" ||
+  "http://localhost:5000";
 
 async function request<T>(
   path: string,
