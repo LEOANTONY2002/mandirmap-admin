@@ -1,4 +1,20 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Country, State, City } from 'country-state-city';
+import { MapContainer, TileLayer, Marker, useMap, useMapEvents } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+
+// Fix leaflet marker icon issue in Vite packaging
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
+import markerIcon from 'leaflet/dist/images/marker-icon.png';
+import markerShadow from 'leaflet/dist/images/marker-shadow.png';
+
+delete (L.Icon.Default.prototype as any)._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconUrl: markerIcon,
+  iconRetinaUrl: markerIcon2x,
+  shadowUrl: markerShadow,
+});
 import {
   DeleteIcon,
   EditIcon,
@@ -122,6 +138,27 @@ function mapLocationToForm(location: LocationRecord): LocationRecord {
   };
 }
 
+function MapController({ center, zoom }: { center: [number, number]; zoom: number }) {
+  const map = useMap();
+  useEffect(() => {
+    map.setView(center, zoom);
+  }, [center, zoom, map]);
+  return null;
+}
+
+function MapEventsHandler({
+  onSelectCoords,
+}: {
+  onSelectCoords: (lat: number, lon: number) => void;
+}) {
+  useMapEvents({
+    click(e) {
+      onSelectCoords(e.latlng.lat, e.latlng.lng);
+    },
+  });
+  return null;
+}
+
 export function LocationsPage() {
   const { token } = useAuth();
   const { data: options } = useAdminQuery<OptionBundle>('/admin/options');
@@ -133,6 +170,324 @@ export function LocationsPage() {
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<LocationRecord>(emptyLocation);
   const [open, setOpen] = useState(false);
+  const [selectedCountryCode, setSelectedCountryCode] = useState<string>('IN');
+  const [selectedStateCode, setSelectedStateCode] = useState<string>('');
+  const [selectedCountryName, setSelectedCountryName] = useState<string>('India');
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [countryError, setCountryError] = useState<string | null>(null);
+  const [stateError, setStateError] = useState<string | null>(null);
+  const [districtError, setDistrictError] = useState<string | null>(null);
+  const [coordTab, setCoordTab] = useState<'map' | 'url' | 'manual'>('map');
+  const [mapUrl, setMapUrl] = useState('');
+  const [mapUrlError, setMapUrlError] = useState<string | null>(null);
+  const [latError, setLatError] = useState<string | null>(null);
+  const [lonError, setLonError] = useState<string | null>(null);
+  const [latInput, setLatInput] = useState('');
+  const [lonInput, setLonInput] = useState('');
+  const [mapCenter, setMapCenter] = useState<[number, number]>([12.0314, 75.3578]);
+  const [mapZoom, setMapZoom] = useState(13);
+  const [mapSearchQuery, setMapSearchQuery] = useState('');
+  const [mapSuggestions, setMapSuggestions] = useState<Array<{
+    label: string;
+    lat: number;
+    lon: number;
+  }>>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [editorTab, setEditorTab] = useState<'map' | 'manual'>('map');
+  const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const deleting = deletingId !== null;
+  const isSavingRef = useRef(false);
+
+  const handleGeocodeRegion = async (country: string, state: string, district: string) => {
+    if (!country) return;
+    const queryParts = [district, state, country].filter(Boolean);
+    const query = queryParts.join(', ');
+    try {
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`);
+      const data = await res.json();
+      if (data && data.length > 0) {
+        const lat = Number(data[0].lat);
+        const lon = Number(data[0].lon);
+        setMapCenter([lat, lon]);
+        setMapZoom(district ? 12 : state ? 8 : 5);
+      }
+    } catch (err) {
+      console.error('Geocoding error:', err);
+    }
+  };
+
+  const handleMapClickCoords = async (lat: number, lon: number) => {
+    const preciseLat = Number(lat.toFixed(6));
+    const preciseLon = Number(lon.toFixed(6));
+    
+    setLatInput(String(preciseLat));
+    setLonInput(String(preciseLon));
+    updateBase('latitude', preciseLat);
+    updateBase('longitude', preciseLon);
+    setLatError(null);
+    setLonError(null);
+    
+    try {
+      const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${preciseLat}&lon=${preciseLon}`);
+      const data = await res.json();
+      if (data && data.address) {
+        const addr = data.address;
+        
+        if (addr.country) {
+          const matchedCountry = Country.getAllCountries().find(
+            (c) => c.name.toLowerCase() === addr.country.toLowerCase()
+          );
+          if (matchedCountry) {
+            setSelectedCountryCode(matchedCountry.isoCode);
+            setSelectedCountryName(matchedCountry.name);
+            
+            if (addr.state) {
+              const states = State.getStatesOfCountry(matchedCountry.isoCode);
+              const matchedState = states.find(
+                (s) => s.name.toLowerCase() === addr.state.toLowerCase() ||
+                       s.name.toLowerCase().includes(addr.state.toLowerCase())
+              );
+              if (matchedState) {
+                setSelectedStateCode(matchedState.isoCode);
+                updateBase('state', matchedState.name);
+                
+                const districtName = addr.county || addr.city || addr.town || addr.suburb || '';
+                if (districtName) {
+                  const cities = City.getCitiesOfState(matchedCountry.isoCode, matchedState.isoCode);
+                  const matchedCity = cities.find(
+                    (c) => c.name.toLowerCase() === districtName.toLowerCase() ||
+                           c.name.toLowerCase().includes(districtName.toLowerCase()) ||
+                           districtName.toLowerCase().includes(c.name.toLowerCase())
+                  );
+                  if (matchedCity) {
+                    updateBase('district', matchedCity.name);
+                  } else {
+                    updateBase('district', districtName.replace(/\s+District$/i, ''));
+                  }
+                }
+              }
+            }
+          }
+        }
+        
+        const venueName = addr.amenity || addr.tourism || addr.shop || addr.historic || addr.artwork || '';
+        if (venueName) {
+          updateBase('name', venueName);
+        }
+        
+        const formattedAddress = data.display_name || '';
+        if (formattedAddress) {
+          updateBase('addressText', formattedAddress);
+        }
+      }
+    } catch (err) {
+      console.error('Reverse geocoding error:', err);
+    }
+    
+    setTimeout(() => {
+      setEditorTab('manual');
+    }, 600);
+  };
+
+  const handleMapSearch = async (query: string) => {
+    if (!query.trim()) return;
+    try {
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`);
+      const data = await res.json();
+      if (data && data.length > 0) {
+        const lat = Number(data[0].lat);
+        const lon = Number(data[0].lon);
+        setMapCenter([lat, lon]);
+        setMapZoom(16);
+        handleMapClickCoords(lat, lon);
+      } else {
+        alert("Location not found on map.");
+      }
+    } catch (err) {
+      console.error('Search error:', err);
+    }
+  };
+
+  const handleSelectSuggestion = (suggestion: { label: string; lat: number; lon: number }) => {
+    setMapSearchQuery(suggestion.label);
+    setShowSuggestions(false);
+    
+    setMapCenter([suggestion.lat, suggestion.lon]);
+    setMapZoom(16);
+    handleMapClickCoords(suggestion.lat, suggestion.lon);
+  };
+
+  useEffect(() => {
+    if (!mapSearchQuery.trim() || mapSearchQuery.length < 3) {
+      setMapSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(mapSearchQuery)}&limit=8`);
+        const data = await res.json();
+        if (data && data.features) {
+          const suggestions = data.features.map((f: any) => {
+            const name = f.properties.name || '';
+            const city = f.properties.city || f.properties.town || f.properties.village || '';
+            const state = f.properties.state || '';
+            const country = f.properties.country || '';
+            const label = [name, city, state, country].filter(Boolean).join(', ');
+            return {
+              label,
+              lon: f.geometry.coordinates[0],
+              lat: f.geometry.coordinates[1]
+            };
+          });
+          setMapSuggestions(suggestions);
+          setShowSuggestions(true);
+        }
+      } catch (err) {
+        console.error('Autocomplete fetch error:', err);
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [mapSearchQuery]);
+
+  useEffect(() => {
+    if (open && coordTab === 'map') {
+      if (latInput && lonInput && !isNaN(Number(latInput)) && !isNaN(Number(lonInput))) {
+        setMapCenter([Number(latInput), Number(lonInput)]);
+        setMapZoom(15);
+        return;
+      }
+      const delayDebounce = setTimeout(() => {
+        handleGeocodeRegion(selectedCountryName, selected.state || '', selected.district || '');
+      }, 500);
+      return () => clearTimeout(delayDebounce);
+    }
+  }, [selectedCountryName, selected.state, selected.district, coordTab, open]);
+
+  const validateLatitude = (val: string | number) => {
+    const strVal = String(val).trim();
+    const num = Number(strVal);
+    if (strVal === '' || isNaN(num) || num < 8 || num > 38) {
+      setLatError('Latitude must be a valid number between 8.0 and 38.0 (India region).');
+      return false;
+    }
+    if (Number.isInteger(num)) {
+      setLatError('Latitude must be a decimal number (not an integer) with at least 3 decimal places.');
+      return false;
+    }
+    if (typeof val === 'string') {
+      const decRegex = /^-?\d+\.\d{3,}$/;
+      if (!decRegex.test(strVal)) {
+        setLatError('Latitude must be a decimal number with at least 3 decimal places (e.g., 12.031).');
+        return false;
+      }
+    }
+    setLatError(null);
+    return true;
+  };
+
+  const validateLongitude = (val: string | number) => {
+    const strVal = String(val).trim();
+    const num = Number(strVal);
+    if (strVal === '' || isNaN(num) || num < 68 || num > 98) {
+      setLonError('Longitude must be a valid number between 68.0 and 98.0 (India region).');
+      return false;
+    }
+    if (Number.isInteger(num)) {
+      setLonError('Longitude must be a decimal number (not an integer) with at least 3 decimal places.');
+      return false;
+    }
+    if (typeof val === 'string') {
+      const decRegex = /^-?\d+\.\d{3,}$/;
+      if (!decRegex.test(strVal)) {
+        setLonError('Longitude must be a decimal number with at least 3 decimal places (e.g., 75.357).');
+        return false;
+      }
+    }
+    setLonError(null);
+    return true;
+  };
+
+  const parseCoordinates = (input: string) => {
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+
+    const atMatch = trimmed.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+    if (atMatch) {
+      return { lat: Number(atMatch[1]), lon: Number(atMatch[2]) };
+    }
+
+    const qMatch = trimmed.match(/[?&](q|ll)=(-?\d+\.\d+),(-?\d+\.\d+)/);
+    if (qMatch) {
+      return { lat: Number(qMatch[2]), lon: Number(qMatch[3]) };
+    }
+
+    if (trimmed.includes(',')) {
+      const parts = trimmed.split(',');
+      if (parts.length === 2) {
+        const lat = Number(parts[0].trim());
+        const lon = Number(parts[1].trim());
+        if (!isNaN(lat) && !isNaN(lon)) {
+          return { lat, lon };
+        }
+      }
+    }
+
+    return null;
+  };
+
+  const validateCountry = (name: string) => {
+    if (!name.trim()) {
+      setCountryError(null);
+      return true;
+    }
+    const matched = Country.getAllCountries().some(
+      (c) => c.name.toLowerCase() === name.toLowerCase()
+    );
+    if (!matched) {
+      setCountryError('Please select a valid Country from the list.');
+      return false;
+    }
+    setCountryError(null);
+    return true;
+  };
+
+  const validateState = (name: string) => {
+    if (!name.trim()) {
+      setStateError(null);
+      return true;
+    }
+    const states = State.getStatesOfCountry(selectedCountryCode);
+    const matched = states.some(
+      (s) => s.name.toLowerCase() === name.toLowerCase()
+    );
+    if (!matched) {
+      setStateError('Please select a valid State from the list.');
+      return false;
+    }
+    setStateError(null);
+    return true;
+  };
+
+  const validateDistrict = (name: string) => {
+    if (!name.trim()) {
+      setDistrictError(null);
+      return true;
+    }
+    const cities = City.getCitiesOfState(selectedCountryCode, selectedStateCode);
+    const matched = cities.some(
+      (c) => c.name.toLowerCase() === name.toLowerCase()
+    );
+    if (!matched) {
+      setDistrictError('Please select a valid District/City from the list.');
+      return false;
+    }
+    setDistrictError(null);
+    return true;
+  };
 
   const path = useMemo(() => {
     const params = new URLSearchParams({
@@ -262,79 +617,323 @@ export function LocationsPage() {
   }
 
   async function openEditor(location?: LocationRecord) {
-    setSelected(location?.id ? mapLocationToForm(location) : emptyLocation);
+    const activeLocation = location?.id ? mapLocationToForm(location) : emptyLocation;
+    setSelected(activeLocation);
+    
+    if (activeLocation.state) {
+      const allStates = State.getAllStates();
+      const matchedState = allStates.find(
+        (s) => s.name.toLowerCase() === activeLocation.state?.toLowerCase()
+      );
+      if (matchedState) {
+        setSelectedCountryCode(matchedState.countryCode);
+        setSelectedStateCode(matchedState.isoCode);
+        const countryObj = Country.getCountryByCode(matchedState.countryCode);
+        setSelectedCountryName(countryObj?.name ?? 'India');
+      } else {
+        setSelectedCountryCode('IN');
+        setSelectedStateCode('');
+        setSelectedCountryName('India');
+      }
+    } else {
+      setSelectedCountryCode('IN');
+      setSelectedStateCode('');
+      setSelectedCountryName('India');
+    }
+    
+    setValidationError(null);
+    setCountryError(null);
+    setStateError(null);
+    setDistrictError(null);
+    setLatError(null);
+    setLonError(null);
+    setLatInput(activeLocation.latitude ? String(activeLocation.latitude) : '');
+    setLonInput(activeLocation.longitude ? String(activeLocation.longitude) : '');
+    setMapUrlError(null);
+    setMapSearchQuery('');
+    setMapSuggestions([]);
+    setShowSuggestions(false);
+    setCoordTab('map');
+    setEditorTab(location?.id ? 'manual' : 'map');
+    setSaving(false);
+    setDeletingId(null);
+    isSavingRef.current = false;
+    if (activeLocation.latitude && activeLocation.longitude) {
+      setMapCenter([activeLocation.latitude, activeLocation.longitude]);
+      setMapZoom(15);
+    } else {
+      const countryObj = Country.getAllCountries().find(
+        (c) => c.name.toLowerCase() === selectedCountryName.toLowerCase()
+      );
+      handleGeocodeRegion(countryObj?.name || 'India', activeLocation.state || '', activeLocation.district || '');
+    }
     setOpen(true);
   }
 
-  async function save() {
-    if (!token) return;
+  const isFormValid = useMemo(() => {
+    if (!selected.name.trim()) return false;
+    if (!selectedCountryName.trim() || countryError) return false;
+    if (!selected.state?.trim() || stateError) return false;
+    if (!selected.district?.trim() || districtError) return false;
+    
+    // Validate country matches list
+    const isCountryMatch = Country.getAllCountries().some(
+      (c) => c.name.toLowerCase() === selectedCountryName.toLowerCase()
+    );
+    if (!isCountryMatch) return false;
 
-    const payload = {
-      ...selected,
-      temple:
-        selected.category === 'TEMPLE'
-          ? {
-              history: selected.temple?.history ?? '',
-              historyMl: selected.temple?.historyMl ?? '',
-              openTime: selected.temple?.openTime ?? '',
-              closeTime: selected.temple?.closeTime ?? '',
-              vazhipaduData: (selected.temple?.vazhipaduData as VazhipaduItem[]).filter(
-                (item) => item.name.trim() || item.price.trim(),
-              ),
-              deityIds:
-                selected.temple?.deities?.map(
-                  (item) => item.deity.id ?? item.deityId,
-                ) ?? [],
-            }
-          : null,
-      hotel:
-        ['HOTEL', 'RENTAL'].includes(selected.category)
-          ? {
-              pricePerDay: selected.hotel?.pricePerDay ?? '0',
-              contactPhone: selected.hotel?.contactPhone ?? '',
-              whatsapp: selected.hotel?.whatsapp ?? '',
-              amenityIds:
-                selected.hotel?.amenities?.map(
-                  (item) => item.amenity.id ?? item.amenityId,
-                ) ?? [],
-            }
-          : null,
-      restaurant:
-        selected.category === 'RESTAURANT'
-          ? {
-              isPureVeg: selected.restaurant?.isPureVeg ?? true,
-              menuItems:
-                selected.restaurant?.menuItems?.filter(
-                  (item) => item.name.trim() || item.price.trim() || item.image?.trim(),
-                ) ?? [],
-            }
-          : null,
-      media:
-        selected.media?.filter(
-          (item) => item.url.trim() || item.thumbnailUrl?.trim(),
-        ) ?? [],
-    };
+    // Validate state matches list of country
+    const states = State.getStatesOfCountry(selectedCountryCode);
+    const isStateMatch = states.some(
+      (s) => s.name.toLowerCase() === (selected.state ?? '').toLowerCase()
+    );
+    if (!isStateMatch) return false;
 
-    if (selected.id) {
-      await api.patch(`/admin/locations/${selected.id}`, payload, token);
+    // Validate district matches list of state
+    const cities = City.getCitiesOfState(selectedCountryCode, selectedStateCode);
+    const isDistrictMatch = cities.some(
+      (c) => c.name.toLowerCase() === (selected.district ?? '').toLowerCase()
+    );
+    if (!isDistrictMatch) return false;
+    
+    // Check latitude range & decimal format
+    const latNum = Number(latInput);
+    if (!latInput.trim() || isNaN(latNum) || latNum < 8 || latNum > 38 || Number.isInteger(latNum) || latError) return false;
+    
+    // Check longitude range & decimal format
+    const lonNum = Number(lonInput);
+    if (!lonInput.trim() || isNaN(lonNum) || lonNum < 68 || lonNum > 98 || Number.isInteger(lonNum) || lonError) return false;
+    
+    if (mapUrlError) return false;
+    return true;
+  }, [
+    selected.name,
+    selectedCountryName,
+    selectedCountryCode,
+    selectedStateCode,
+    selected.state,
+    selected.district,
+    countryError,
+    stateError,
+    districtError,
+    latInput,
+    lonInput,
+    latError,
+    lonError,
+    mapUrlError
+  ]);
+
+  const validationErrors = useMemo(() => {
+    const errors: string[] = [];
+    if (!selected.name.trim()) {
+      errors.push("Name is required.");
+    }
+    
+    // Country
+    if (!selectedCountryName.trim()) {
+      errors.push("Country is required.");
     } else {
-      await api.post('/admin/locations', payload, token);
+      const isCountryMatch = Country.getAllCountries().some(
+        (c) => c.name.toLowerCase() === selectedCountryName.toLowerCase()
+      );
+      if (!isCountryMatch) {
+        errors.push("Please select a valid Country from the list.");
+      }
     }
 
-    setOpen(false);
-    setSelected(emptyLocation);
-    refresh();
+    // State
+    if (!selected.state?.trim()) {
+      errors.push("State is required.");
+    } else {
+      const states = State.getStatesOfCountry(selectedCountryCode);
+      const isStateMatch = states.some(
+        (s) => s.name.toLowerCase() === (selected.state ?? '').toLowerCase()
+      );
+      if (!isStateMatch) {
+        errors.push("Please select a valid State from the list.");
+      }
+    }
+
+    // District
+    if (!selected.district?.trim()) {
+      errors.push("District/City is required.");
+    } else {
+      const cities = City.getCitiesOfState(selectedCountryCode, selectedStateCode);
+      const isDistrictMatch = cities.some(
+        (c) => c.name.toLowerCase() === (selected.district ?? '').toLowerCase()
+      );
+      if (!isDistrictMatch) {
+        errors.push("Please select a valid District/City from the list.");
+      }
+    }
+
+    // Latitude
+    const latNum = Number(latInput);
+    if (!latInput.trim()) {
+      errors.push("Latitude is required.");
+    } else if (isNaN(latNum) || latNum < 8 || latNum > 38) {
+      errors.push("Latitude must be a valid number between 8.0 and 38.0 (India region).");
+    } else if (Number.isInteger(latNum)) {
+      errors.push("Latitude must be a decimal number (not an integer) with at least 3 decimal places.");
+    } else {
+      const decRegex = /^-?\d+\.\d{3,}$/;
+      if (!decRegex.test(latInput.trim())) {
+        errors.push("Latitude must be a decimal number with at least 3 decimal places (e.g., 12.031).");
+      }
+    }
+
+    // Longitude
+    const lonNum = Number(lonInput);
+    if (!lonInput.trim()) {
+      errors.push("Longitude is required.");
+    } else if (isNaN(lonNum) || lonNum < 68 || lonNum > 98) {
+      errors.push("Longitude must be a valid number between 68.0 and 98.0 (India region).");
+    } else if (Number.isInteger(lonNum)) {
+      errors.push("Longitude must be a decimal number (not an integer) with at least 3 decimal places.");
+    } else {
+      const decRegex = /^-?\d+\.\d{3,}$/;
+      if (!decRegex.test(lonInput.trim())) {
+        errors.push("Longitude must be a decimal number with at least 3 decimal places (e.g., 75.357).");
+      }
+    }
+
+    if (mapUrlError) {
+      errors.push(mapUrlError);
+    }
+
+    return errors;
+  }, [
+    selected.name,
+    selectedCountryName,
+    selectedCountryCode,
+    selectedStateCode,
+    selected.state,
+    selected.district,
+    latInput,
+    lonInput,
+    mapUrlError,
+    countryError,
+    stateError,
+    districtError,
+    latError,
+    lonError
+  ]);
+
+  async function save() {
+    if (!token) return;
+    if (isSavingRef.current) return;
+
+    const isCountryValid = validateCountry(selectedCountryName);
+    const isStateValid = validateState(selected.state ?? '');
+    const isDistrictValid = validateDistrict(selected.district ?? '');
+    const isLatValid = validateLatitude(latInput);
+    const isLonValid = validateLongitude(lonInput);
+
+    if (!isCountryValid || !isStateValid || !isDistrictValid || !isLatValid || !isLonValid) {
+      setValidationError("Please correct the highlighted errors before saving.");
+      return;
+    }
+
+    const matchedCountry = Country.getAllCountries().find(
+      (c) => c.name.toLowerCase() === selectedCountryName.toLowerCase()
+    );
+    if (!matchedCountry) return;
+
+    setValidationError(null);
+    setSaving(true);
+    isSavingRef.current = true;
+
+    try {
+      const payload = {
+        ...selected,
+        latitude: Number(latInput),
+        longitude: Number(lonInput),
+        temple:
+          selected.category === 'TEMPLE'
+            ? {
+                history: selected.temple?.history ?? '',
+                historyMl: selected.temple?.historyMl ?? '',
+                openTime: selected.temple?.openTime ?? '',
+                closeTime: selected.temple?.closeTime ?? '',
+                vazhipaduData: (selected.temple?.vazhipaduData as VazhipaduItem[]).filter(
+                  (item) => item.name.trim() || item.price.trim(),
+                ),
+                deityIds:
+                  selected.temple?.deities?.map(
+                    (item) => item.deity.id ?? item.deityId,
+                  ) ?? [],
+              }
+            : null,
+        hotel:
+          ['HOTEL', 'RENTAL'].includes(selected.category)
+            ? {
+                pricePerDay: selected.hotel?.pricePerDay ?? '0',
+                contactPhone: selected.hotel?.contactPhone ?? '',
+                whatsapp: selected.hotel?.whatsapp ?? '',
+                amenityIds:
+                  selected.hotel?.amenities?.map(
+                    (item) => item.amenity.id ?? item.amenityId,
+                  ) ?? [],
+              }
+            : null,
+        restaurant:
+          selected.category === 'RESTAURANT'
+            ? {
+                isPureVeg: selected.restaurant?.isPureVeg ?? true,
+                menuItems:
+                  selected.restaurant?.menuItems?.filter(
+                    (item) => item.name.trim() || item.price.trim() || item.image?.trim(),
+                  ) ?? [],
+              }
+            : null,
+        media:
+          selected.media?.filter(
+            (item) => item.url.trim() || item.thumbnailUrl?.trim(),
+          ) ?? [],
+      };
+
+      if (selected.id) {
+        await api.patch(`/admin/locations/${selected.id}`, payload, token);
+      } else {
+        await api.post('/admin/locations', payload, token);
+      }
+
+      setOpen(false);
+      setSelected(emptyLocation);
+      refresh();
+    } catch (err: any) {
+      console.error('Save error:', err);
+      setValidationError(err?.message || 'An error occurred while saving the location.');
+    } finally {
+      setSaving(false);
+      isSavingRef.current = false;
+    }
   }
 
   async function remove(id: string) {
     if (!token) return;
-    await api.delete(`/admin/locations/${id}`, token);
-    if (selected.id === id) {
-      setOpen(false);
-      setSelected(emptyLocation);
+    if (isSavingRef.current) return;
+    setDeletingId(id);
+    isSavingRef.current = true;
+    try {
+      await api.delete(`/admin/locations/${id}`, token);
+      if (selected.id === id) {
+        setOpen(false);
+        setSelected(emptyLocation);
+      }
+      refresh();
+    } catch (err: any) {
+      console.error('Delete error:', err);
+      setValidationError(err?.message || 'An error occurred while deleting the location.');
+    } finally {
+      setDeletingId(null);
+      isSavingRef.current = false;
     }
-    refresh();
   }
+
+  useEffect(() => {
+    setValidationError(null);
+  }, [selected.name, selected.category, selected.state, selected.district, selectedCountryName, latInput, lonInput]);
 
   return (
     <section>
@@ -436,6 +1035,7 @@ export function LocationsPage() {
                   className="icon-button"
                   onClick={() => openEditor(row)}
                   aria-label="Edit location"
+                  disabled={saving || deleting}
                 >
                   <EditIcon width={16} height={16} />
                 </button>
@@ -443,8 +1043,14 @@ export function LocationsPage() {
                   className="danger-icon-button"
                   onClick={() => remove(row.id)}
                   aria-label="Delete location"
+                  disabled={saving || deleting}
+                  style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: '34px', minHeight: '34px' }}
                 >
-                  <DeleteIcon width={16} height={16} />
+                  {deletingId === row.id ? (
+                    <span className="spinner" />
+                  ) : (
+                    <DeleteIcon width={16} height={16} />
+                  )}
                 </button>
               </div>
             )}
@@ -461,10 +1067,219 @@ export function LocationsPage() {
       <Modal
         open={open}
         title={selected.id ? 'Edit location' : 'New location'}
-        onClose={() => setOpen(false)}
+        onClose={() => {
+          setOpen(false);
+          setValidationError(null);
+          setCountryError(null);
+          setStateError(null);
+          setDistrictError(null);
+          setLatError(null);
+          setLonError(null);
+          setMapUrlError(null);
+          setLatInput('');
+          setLonInput('');
+          setMapUrl('');
+        }}
       >
+        <div className="main-tabs" style={{ display: 'flex', borderBottom: '1px solid #e2e8f0', marginBottom: '1rem', gap: '1rem' }}>
+          <button
+            type="button"
+            style={{
+              padding: '0.5rem 1rem',
+              fontSize: '0.9rem',
+              fontWeight: 600,
+              border: 'none',
+              borderBottom: '2px solid ' + (editorTab === 'map' ? '#FA6A35' : 'transparent'),
+              color: editorTab === 'map' ? '#FA6A35' : '#64748b',
+              backgroundColor: 'transparent',
+              cursor: 'pointer'
+            }}
+            onClick={() => setEditorTab('map')}
+          >
+            Map
+          </button>
+          <button
+            type="button"
+            style={{
+              padding: '0.5rem 1rem',
+              fontSize: '0.9rem',
+              fontWeight: 600,
+              border: 'none',
+              borderBottom: '2px solid ' + (editorTab === 'manual' ? '#FA6A35' : 'transparent'),
+              color: editorTab === 'manual' ? '#FA6A35' : '#64748b',
+              backgroundColor: 'transparent',
+              cursor: 'pointer'
+            }}
+            onClick={() => setEditorTab('manual')}
+          >
+            Manual
+          </button>
+        </div>
+
         <div className="editor-panel">
-          <div className="form-grid">
+          {validationError ? (
+            <div className="error-banner" style={{ marginBottom: '1.5rem' }}>
+              {validationError}
+            </div>
+          ) : null}
+
+          {editorTab === 'map' ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', height: '450px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', position: 'relative' }}>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <input
+                    type="text"
+                    placeholder="Search landmark, temple, or address to place marker..."
+                    value={mapSearchQuery}
+                    onChange={(e) => setMapSearchQuery(e.target.value)}
+                    onFocus={() => {
+                      if (mapSuggestions.length > 0) setShowSuggestions(true);
+                    }}
+                    onBlur={() => {
+                      setTimeout(() => setShowSuggestions(false), 200);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (mapSuggestions.length > 0) {
+                          handleSelectSuggestion(mapSuggestions[0]);
+                        } else {
+                          handleMapSearch(mapSearchQuery);
+                        }
+                      }
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '0.5rem 0.75rem',
+                      fontSize: '0.85rem',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '4px',
+                      outlineColor: '#FA6A35'
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (mapSuggestions.length > 0) {
+                        handleSelectSuggestion(mapSuggestions[0]);
+                      } else {
+                        handleMapSearch(mapSearchQuery);
+                      }
+                    }}
+                    style={{
+                      padding: '0.5rem 1.25rem',
+                      fontSize: '0.85rem',
+                      backgroundColor: '#FA6A35',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontWeight: 500
+                    }}
+                  >
+                    Search
+                  </button>
+                </div>
+
+                {showSuggestions && mapSuggestions.length > 0 && (
+                  <div style={{
+                    position: 'absolute',
+                    top: '100%',
+                    left: 0,
+                    right: 0,
+                    backgroundColor: '#fff',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: '4px',
+                    boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)',
+                    zIndex: 9999,
+                    maxHeight: '200px',
+                    overflowY: 'auto',
+                    marginTop: '2px'
+                  }}>
+                    {mapSuggestions.map((s, idx) => (
+                      <div
+                        key={idx}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          handleSelectSuggestion(s);
+                        }}
+                        style={{
+                          padding: '0.5rem 0.75rem',
+                          fontSize: '0.8rem',
+                          color: '#334155',
+                          cursor: 'pointer',
+                          borderBottom: idx === mapSuggestions.length - 1 ? 'none' : '1px solid #f1f5f9',
+                          backgroundColor: '#fff',
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.backgroundColor = '#f8fafc';
+                          e.currentTarget.style.color = '#FA6A35';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.backgroundColor = '#fff';
+                          e.currentTarget.style.color = '#334155';
+                        }}
+                      >
+                        📍 {s.label}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ flex: 1, width: '100%', borderRadius: '6px', overflow: 'hidden', border: '1px solid #cbd5e1', position: 'relative', zIndex: 1 }}>
+                <MapContainer
+                  center={mapCenter}
+                  zoom={mapZoom}
+                  style={{ height: '100%', width: '100%' }}
+                  scrollWheelZoom={true}
+                >
+                  <TileLayer
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  />
+                  <MapController center={mapCenter} zoom={mapZoom} />
+                  <MapEventsHandler
+                    onSelectCoords={handleMapClickCoords}
+                  />
+                  {latInput && lonInput && !isNaN(Number(latInput)) && !isNaN(Number(lonInput)) && (
+                    <Marker position={[Number(latInput), Number(lonInput)]} />
+                  )}
+                </MapContainer>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.25rem' }}>
+                {latInput && lonInput ? (
+                  <div style={{ fontSize: '0.85rem', color: '#334155' }}>
+                    Selected: <strong>Lat:</strong> {latInput}, <strong>Lon:</strong> {lonInput}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '0.85rem', color: '#64748b', fontStyle: 'italic' }}>
+                    Click on the map or search to place a marker.
+                  </div>
+                )}
+                {latInput && lonInput && (
+                  <button
+                    type="button"
+                    onClick={() => setEditorTab('manual')}
+                    style={{
+                      padding: '0.4rem 1rem',
+                      fontSize: '0.8rem',
+                      backgroundColor: '#10b981',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontWeight: 500
+                    }}
+                  >
+                    Confirm & Enter Details →
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="form-grid">
             <FormField
               label="Name"
               value={selected.name}
@@ -492,27 +1307,347 @@ export function LocationsPage() {
               onChange={(e) => updateBase('addressTextMl', e.target.value)}
             />
             <FormField
-              label="District"
-              value={selected.district ?? ''}
-              onChange={(e) => updateBase('district', e.target.value)}
+              label="Country"
+              datalist
+              value={selectedCountryName}
+              options={Country.getAllCountries().map((c) => c.name)}
+              error={countryError}
+              onChange={(e) => {
+                setValidationError(null);
+                setCountryError(null);
+                const countryName = e.target.value;
+                setSelectedCountryName(countryName);
+                const countryObj = Country.getAllCountries().find(
+                  (c) => c.name.toLowerCase() === countryName.toLowerCase()
+                );
+                if (countryObj) {
+                  setSelectedCountryCode(countryObj.isoCode);
+                  setSelectedStateCode('');
+                  updateBase('state', '');
+                  updateBase('district', '');
+                }
+              }}
+              onBlur={(e) => validateCountry(e.target.value)}
             />
             <FormField
               label="State"
+              datalist
               value={selected.state ?? ''}
-              onChange={(e) => updateBase('state', e.target.value)}
+              options={['', ...State.getStatesOfCountry(selectedCountryCode).map((s) => s.name)]}
+              error={stateError}
+              onChange={(e) => {
+                setValidationError(null);
+                setStateError(null);
+                const stateName = e.target.value;
+                updateBase('state', stateName);
+                
+                const statesOfCountry = State.getStatesOfCountry(selectedCountryCode);
+                const stateObj = statesOfCountry.find(
+                  (s) => s.name.toLowerCase() === stateName.toLowerCase()
+                );
+                if (stateObj) {
+                  setSelectedStateCode(stateObj.isoCode);
+                  updateBase('district', '');
+                }
+              }}
+              onBlur={(e) => validateState(e.target.value)}
             />
             <FormField
-              label="Latitude"
-              type="number"
-              value={selected.latitude}
-              onChange={(e) => updateBase('latitude', Number(e.target.value))}
+              label="District"
+              datalist
+              value={selected.district ?? ''}
+              options={['', ...City.getCitiesOfState(selectedCountryCode, selectedStateCode).map((c) => c.name)]}
+              error={districtError}
+              onChange={(e) => {
+                setValidationError(null);
+                setDistrictError(null);
+                updateBase('district', e.target.value);
+              }}
+              onBlur={(e) => validateDistrict(e.target.value)}
             />
-            <FormField
-              label="Longitude"
-              type="number"
-              value={selected.longitude}
-              onChange={(e) => updateBase('longitude', Number(e.target.value))}
-            />
+            <div className="sub-panel" style={{ gridColumn: 'span 2', marginTop: '1.5rem', marginBottom: '1.5rem', padding: '1rem', border: '1px solid #e2e8f0', borderRadius: '0.375rem', backgroundColor: '#f8fafc' }}>
+              <div className="section-header-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600, color: '#334155' }}>Coordinates</h3>
+                <div className="tab-buttons" style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button
+                    type="button"
+                    style={{
+                      padding: '0.25rem 0.75rem',
+                      fontSize: '0.8rem',
+                      border: '1px solid ' + (coordTab === 'map' ? '#FA6A35' : '#cbd5e1'),
+                      borderRadius: '4px',
+                      backgroundColor: coordTab === 'map' ? '#FA6A35' : '#fff',
+                      color: coordTab === 'map' ? '#fff' : '#475569',
+                      cursor: 'pointer',
+                      fontWeight: 500
+                    }}
+                    onClick={() => setCoordTab('map')}
+                  >
+                    Map
+                  </button>
+                  <button
+                    type="button"
+                    style={{
+                      padding: '0.25rem 0.75rem',
+                      fontSize: '0.8rem',
+                      border: '1px solid ' + (coordTab === 'url' ? '#FA6A35' : '#cbd5e1'),
+                      borderRadius: '4px',
+                      backgroundColor: coordTab === 'url' ? '#FA6A35' : '#fff',
+                      color: coordTab === 'url' ? '#fff' : '#475569',
+                      cursor: 'pointer',
+                      fontWeight: 500
+                    }}
+                    onClick={() => setCoordTab('url')}
+                  >
+                    Google Map URL
+                  </button>
+                  <button
+                    type="button"
+                    style={{
+                      padding: '0.25rem 0.75rem',
+                      fontSize: '0.8rem',
+                      border: '1px solid ' + (coordTab === 'manual' ? '#FA6A35' : '#cbd5e1'),
+                      borderRadius: '4px',
+                      backgroundColor: coordTab === 'manual' ? '#FA6A35' : '#fff',
+                      color: coordTab === 'manual' ? '#fff' : '#475569',
+                      cursor: 'pointer',
+                      fontWeight: 500
+                    }}
+                    onClick={() => setCoordTab('manual')}
+                  >
+                    Manual
+                  </button>
+                </div>
+              </div>
+
+              {coordTab === 'map' ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', position: 'relative' }}>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <input
+                        type="text"
+                        placeholder="Search landmark, temple, or address..."
+                        value={mapSearchQuery}
+                        onChange={(e) => setMapSearchQuery(e.target.value)}
+                        onFocus={() => {
+                          if (mapSuggestions.length > 0) setShowSuggestions(true);
+                        }}
+                        onBlur={() => {
+                          setTimeout(() => setShowSuggestions(false), 200);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            if (mapSuggestions.length > 0) {
+                              handleSelectSuggestion(mapSuggestions[0]);
+                            } else {
+                              handleMapSearch(mapSearchQuery);
+                            }
+                          }
+                        }}
+                        style={{
+                          flex: 1,
+                          padding: '0.4rem 0.75rem',
+                          fontSize: '0.85rem',
+                          border: '1px solid #cbd5e1',
+                          borderRadius: '4px',
+                          outlineColor: '#FA6A35'
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (mapSuggestions.length > 0) {
+                            handleSelectSuggestion(mapSuggestions[0]);
+                          } else {
+                            handleMapSearch(mapSearchQuery);
+                          }
+                        }}
+                        style={{
+                          padding: '0.4rem 1rem',
+                          fontSize: '0.85rem',
+                          backgroundColor: '#FA6A35',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          fontWeight: 500
+                        }}
+                      >
+                        Search
+                      </button>
+                    </div>
+
+                    {showSuggestions && mapSuggestions.length > 0 && (
+                      <div style={{
+                        position: 'absolute',
+                        top: '100%',
+                        left: 0,
+                        right: 0,
+                        backgroundColor: '#fff',
+                        border: '1px solid #cbd5e1',
+                        borderRadius: '4px',
+                        boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)',
+                        zIndex: 9999,
+                        maxHeight: '200px',
+                        overflowY: 'auto',
+                        marginTop: '2px'
+                      }}>
+                        {mapSuggestions.map((s, idx) => (
+                          <div
+                            key={idx}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              handleSelectSuggestion(s);
+                            }}
+                            style={{
+                              padding: '0.5rem 0.75rem',
+                              fontSize: '0.8rem',
+                              color: '#334155',
+                              cursor: 'pointer',
+                              borderBottom: idx === mapSuggestions.length - 1 ? 'none' : '1px solid #f1f5f9',
+                              backgroundColor: '#fff',
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.backgroundColor = '#f8fafc';
+                              e.currentTarget.style.color = '#FA6A35';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = '#fff';
+                              e.currentTarget.style.color = '#334155';
+                            }}
+                          >
+                            📍 {s.label}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ height: '250px', width: '100%', borderRadius: '4px', overflow: 'hidden', border: '1px solid #cbd5e1', position: 'relative', zIndex: 1 }}>
+                    <MapContainer
+                      center={mapCenter}
+                      zoom={mapZoom}
+                      style={{ height: '100%', width: '100%' }}
+                      scrollWheelZoom={true}
+                    >
+                      <TileLayer
+                        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                      />
+                      <MapController center={mapCenter} zoom={mapZoom} />
+                      <MapEventsHandler
+                        onSelectCoords={(lat, lon) => {
+                          const preciseLat = Number(lat.toFixed(6));
+                          const preciseLon = Number(lon.toFixed(6));
+                          setLatInput(String(preciseLat));
+                          setLonInput(String(preciseLon));
+                          updateBase('latitude', preciseLat);
+                          updateBase('longitude', preciseLon);
+                          setLatError(null);
+                          setLonError(null);
+                        }}
+                      />
+                      {latInput && lonInput && !isNaN(Number(latInput)) && !isNaN(Number(lonInput)) && (
+                        <Marker position={[Number(latInput), Number(lonInput)]} />
+                      )}
+                    </MapContainer>
+                  </div>
+                  {latInput && lonInput ? (
+                    <div style={{ fontSize: '0.8rem', color: '#64748b', marginTop: '0.5rem' }}>
+                      Selected on Map: <strong>Latitude:</strong> {latInput}, <strong>Longitude:</strong> {lonInput}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '0.8rem', color: '#64748b', marginTop: '0.5rem', fontStyle: 'italic' }}>
+                      Click on the map to set location coordinates.
+                    </div>
+                  )}
+                </div>
+              ) : coordTab === 'url' ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  <FormField
+                    label="Google Map URL or Coordinates"
+                    value={mapUrl}
+                    placeholder="Paste URL or coordinates (e.g. 12.0314, 75.3578)"
+                    error={mapUrlError}
+                    onChange={(e) => {
+                      setValidationError(null);
+                      setMapUrlError(null);
+                      setMapUrl(e.target.value);
+                      const parsed = parseCoordinates(e.target.value);
+                      if (parsed) {
+                        const isLatValid = validateLatitude(parsed.lat);
+                        const isLonValid = validateLongitude(parsed.lon);
+                        if (isLatValid && isLonValid) {
+                          setLatInput(String(parsed.lat));
+                          setLonInput(String(parsed.lon));
+                          updateBase('latitude', parsed.lat);
+                          updateBase('longitude', parsed.lon);
+                          setMapUrlError(null);
+                        } else {
+                          setMapUrlError(`Coordinates parsed but out of range: Lat ${parsed.lat}, Lon ${parsed.lon}.`);
+                        }
+                      }
+                    }}
+                    onBlur={(e) => {
+                      const parsed = parseCoordinates(e.target.value);
+                      if (parsed) {
+                        const isLatValid = validateLatitude(parsed.lat);
+                        const isLonValid = validateLongitude(parsed.lon);
+                        if (isLatValid && isLonValid) {
+                          setLatInput(String(parsed.lat));
+                          setLonInput(String(parsed.lon));
+                          updateBase('latitude', parsed.lat);
+                          updateBase('longitude', parsed.lon);
+                          setMapUrlError(null);
+                        } else {
+                          setMapUrlError(`Coordinates parsed but out of range: Lat ${parsed.lat}, Lon ${parsed.lon}.`);
+                        }
+                      } else if (e.target.value.trim() !== '') {
+                        setMapUrlError('Could not parse valid coordinates. Enter a Google Maps link or "lat, lon" pair.');
+                      }
+                    }}
+                  />
+                  {selected.latitude !== 0 || selected.longitude !== 0 ? (
+                    <div style={{ fontSize: '0.8rem', color: '#64748b', marginTop: '0.25rem' }}>
+                      Active: <strong>Latitude:</strong> {selected.latitude}, <strong>Longitude:</strong> {selected.longitude}
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                  <FormField
+                    label="Latitude"
+                    value={latInput}
+                    error={latError}
+                    onChange={(e) => {
+                      setValidationError(null);
+                      setLatError(null);
+                      setLatInput(e.target.value);
+                      const num = Number(e.target.value);
+                      if (!isNaN(num)) {
+                        updateBase('latitude', num);
+                      }
+                    }}
+                    onBlur={(e) => validateLatitude(e.target.value)}
+                  />
+                  <FormField
+                    label="Longitude"
+                    value={lonInput}
+                    error={lonError}
+                    onChange={(e) => {
+                      setValidationError(null);
+                      setLonError(null);
+                      setLonInput(e.target.value);
+                      const num = Number(e.target.value);
+                      if (!isNaN(num)) {
+                        updateBase('longitude', num);
+                      }
+                    }}
+                    onBlur={(e) => validateLongitude(e.target.value)}
+                  />
+                </div>
+              )}
+            </div>
           </div>
 
           <FormField
@@ -790,19 +1925,43 @@ export function LocationsPage() {
             )}
           </div>
 
+          {validationError ? (
+            <div className="error-banner" style={{ marginTop: '1rem', marginBottom: '1rem' }}>
+              {validationError}
+            </div>
+          ) : null}
+
+          {!isFormValid && validationErrors.length > 0 && (
+            <div className="error-banner" style={{ marginTop: '1rem', marginBottom: '1rem' }}>
+              <strong>Please resolve the following issues to enable saving:</strong>
+              <ul style={{ margin: '0.5rem 0 0 1.25rem', padding: 0 }}>
+                {validationErrors.map((err, idx) => (
+                  <li key={idx} style={{ fontSize: '0.85rem', lineHeight: '1.4' }}>{err}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           <div className="button-row">
-            <button className="primary-button" onClick={save}>
-              {selected.id ? 'Save location' : 'Create location'}
+            <button
+              className="primary-button"
+              onClick={save}
+              disabled={saving || deleting || !isFormValid}
+            >
+              {saving ? (selected.id ? 'Saving...' : 'Creating...') : (selected.id ? 'Save location' : 'Create location')}
             </button>
             {selected.id ? (
               <button
                 className="danger-button"
                 onClick={() => remove(selected.id)}
+                disabled={saving || deleting}
               >
-                Delete
+                {deleting ? 'Deleting...' : 'Delete'}
               </button>
             ) : null}
           </div>
+            </>
+          )}
         </div>
       </Modal>
     </section>

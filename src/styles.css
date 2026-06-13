@@ -352,6 +352,19 @@ button {
   color: #991b1b;
 }
 
+button:disabled,
+.primary-button:disabled,
+.danger-button:disabled,
+.secondary-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed !important;
+  background: #cbd5e1 !important;
+  color: #64748b !important;
+  border-color: #cbd5e1 !important;
+  box-shadow: none !important;
+  pointer-events: none !important;
+}
+
 .secondary-outline-button,
 .icon-button,
 .upload-button {
@@ -559,4 +572,21 @@ button {
   .dynamic-row {
     grid-template-columns: 1fr;
   }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+  display: inline-block;
+  vertical-align: middle;
 }

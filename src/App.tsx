@@ -11,6 +11,7 @@ import { UsersPage } from './pages/UsersPage';
 
 export function App() {
   const { token } = useAuth();
+  console.log(import.meta.env.DEV)
 
   if (!token) {
     return <LoginPage />;
